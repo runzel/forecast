@@ -1,0 +1,49 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgis/postgis:15-3.4
+    environment:
+      POSTGRES_USER: gm_user
+      POSTGRES_PASSWORD: gm_pass
+      POSTGRES_DB: global_monitor
+    ports:
+      - '5432:5432'
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  minio:
+    image: minio/minio:RELEASE.2026-01-01T00-00-00Z
+    command: server /data
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    ports:
+      - '9000:9000'
+    volumes:
+      - minio_data:/data
+
+  redpanda:
+    image: vectorized/redpanda:latest
+    command: ["redpanda", "start", "--overprovisioned", "--smp 1", "--memory 1G", "--reserve-memory 0M", "--node-id 0", "--check=false"]
+    ports:
+      - '9092:9092'
+      - '9644:9644'
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - '6379:6379'
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:21.1.1
+    environment:
+      KEYCLOAK_ADMIN: admin
+      KEYCLOAK_ADMIN_PASSWORD: admin
+    command: start-dev
+    ports:
+      - '8080:8080'
+
+volumes:
+  postgres_data:
+  minio_data:
