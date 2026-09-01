@@ -1,0 +1,240 @@
+*** Begin Patch
+*** Add File: apps/api/src/main.ts
++import { Module, Controller, Post, UploadedFile, UseInterceptors, Get } from '@nestjs/common';
++import { FileInterceptor } from '@nestjs/platform-express';
++import { NestFactory } from '@nestjs/core';
++import { FastifyAdapter, NestFastifyApplication } from '@nestjs/platform-fastify';
++import { Pool } from 'pg';
++
++@Controller('ingest')
++class IngestController {
++  @Post('synthetic-ais')
++  @UseInterceptors(FileInterceptor('file'))
++  async uploadSynthetic(@UploadedFile() file: Express.Multer.File) {
++    // Placeholder: store raw capture, create raw_observation record
++    return { status: 'received', size: file?.size ?? 0 };
++  }
++}
++
++@Controller()
++class VesselsController {
++  pool: Pool;
++  constructor() {
++    const connectionString = process.env.DATABASE_URL || 'postgres://gm_user:gm_pass@localhost:5432/global_monitor';
++    this.pool = new Pool({ connectionString });
++  }
++
++  @Get('vessels')
++  async listVessels() {
++    const res = await this.pool.query('SELECT id, imo, mmsi, name, created_at FROM vessels ORDER BY created_at DESC LIMIT 100');
++    return res.rows;
++  }
++
++  @Get('observations')
++  async listObservations() {
++    const res = await this.pool.query('SELECT id, mmsi, imo, name, lat, lon, observed_at FROM ais_observations ORDER BY observed_at DESC LIMIT 100');
++    return res.rows;
++  }
++}
++
++@Module({ controllers: [IngestController, VesselsController] })
++class AppModule {}
++
++async function bootstrap() {
++  const app = await NestFactory.create<NestFastifyApplication>(AppModule, new FastifyAdapter());
++  app.enableShutdownHooks();
++  await app.listen(3001, '0.0.0.0');
++  console.log('API listening on 3001');
++}
++
++bootstrap();
++
+*** End Patch
+*** Begin Patch
+*** Add File: apps/api/src/vessels.controller.ts
++import { Controller, Get } from '@nestjs/common';
++import { Pool } from 'pg';
++
++@Controller()
++export class VesselsController {
++  pool: Pool;
++  constructor() {
++    const connectionString = process.env.DATABASE_URL || 'postgres://gm_user:gm_pass@localhost:5432/global_monitor';
++    this.pool = new Pool({ connectionString });
++  }
++
++  @Get('vessels')
++  async listVessels() {
++    const res = await this.pool.query('SELECT id, imo, mmsi, name, created_at FROM vessels ORDER BY created_at DESC LIMIT 100');
++    return res.rows;
++  }
++
++  @Get('observations')
++  async listObservations() {
++    const res = await this.pool.query('SELECT id, mmsi, imo, name, lat, lon, observed_at FROM ais_observations ORDER BY observed_at DESC LIMIT 100');
++    return res.rows;
++  }
++}
++
+*** End Patch
+*** Begin Patch
+*** Add File: .github/workflows/ci.yml
++name: CI
++
++on:
++  push:
++    branches: [ main ]
++  pull_request:
++    branches: [ main ]
++
++jobs:
++  build:
++    runs-on: ubuntu-latest
++    services:
++      postgres:
++        image: postgis/postgis:15-3.4
++        env:
++          POSTGRES_USER: gm_user
++          POSTGRES_PASSWORD: gm_pass
++          POSTGRES_DB: global_monitor
++        ports:
++          - 5432:5432
++        options: >-
++          --health-cmd="pg_isready -U gm_user" --health-interval=10s --health-timeout=5s --health-retries=5
++      minio:
++        image: minio/minio
++        ports:
++          - 9000:9000
++        options: >-
++          --entrypoint "" --health-cmd='curl -f http://localhost:9000/minio/health/ready || exit 1' --health-interval=10s --health-timeout=5s --health-retries=5
++        env:
++          MINIO_ROOT_USER: minioadmin
++          MINIO_ROOT_PASSWORD: minioadmin
++      redpanda:
++        image: vectorized/redpanda:latest
++        ports:
++          - 9092:9092
++
++    steps:
++      - uses: actions/checkout@v4
++
++      - name: Setup Node.js
++        uses: actions/setup-node@v4
++        with:
++          node-version: '20'
++
++      - name: Setup pnpm
++        uses: pnpm/action-setup@v2
++        with:
++          pnpm-version: 8
++
++      - name: Install dependencies
++        run: pnpm install
++
++      - name: Run lint
++        run: pnpm lint
++
++      - name: Run TypeScript type check
++        run: pnpm typecheck
++
++      - name: Wait for Postgres
++        run: |
++          for i in {1..30}; do
++            if pg_isready -h localhost -p 5432 -U gm_user; then
++              echo "Postgres ready"
++              break
++            fi
++            echo "Waiting for Postgres..."
++            sleep 2
++          done
++        env:
++          PGPASSWORD: gm_pass
++
++      - name: Apply migrations
++        run: |
++          sudo apt-get update && sudo apt-get install -y postgresql-client
++          export DATABASE_URL="postgres://gm_user:gm_pass@localhost:5432/global_monitor"
++          chmod +x infra/scripts/run_migrations.sh
++          ./infra/scripts/run_migrations.sh
++        env:
++          PGPASSWORD: gm_pass
++
++      - name: Build API
++        run: pnpm --filter api build
++
++      - name: Build web
++        run: pnpm --filter web build
++
+*** End Patch
+*** Begin Patch
+*** Add File: apps/web/src/pages/index.tsx
++import React, { useEffect, useState } from 'react';
++
++export default function Home() {
++  const [vessels, setVessels] = useState<any[]>([]);
++  const [observations, setObservations] = useState<any[]>([]);
++
++  useEffect(() => {
++    fetch('/api/proxy/vessels').then(r => r.json()).then(setVessels).catch(() => {});
++    fetch('/api/proxy/observations').then(r => r.json()).then(setObservations).catch(() => {});
++  }, []);
++
++  return (
++    <div>
++      <h1>GLOBAL MONITOR — Web UI (placeholder)</h1>
++      <section>
++        <h2>Vessels</h2>
++        <ul>
++          {vessels.map(v => (
++            <li key={v.id}>{v.name || v.imo || v.mmsi} — {v.imo || v.mmsi}</li>
++          ))}
++        </ul>
++      </section>
++
++      <section>
++        <h2>Recent Observations (delayed view)</h2>
++        <ul>
++          {observations.map(o => (
++            <li key={o.id}>{o.name || o.mmsi} @ {o.lat},{o.lon} at {o.observed_at}</li>
++          ))}
++        </ul>
++      </section>
++    </div>
++  );
++}
++
+*** End Patch
+*** Begin Patch
+*** Add File: apps/web/src/pages/api/proxy/[...catchall].ts
++// Simple API proxy for development to avoid CORS and to call backend running on 3001
++import type { NextApiRequest, NextApiResponse } from 'next'
++
++const BACKEND = process.env.BACKEND_URL || 'http://localhost:3001'
++
++export default async function handler(req: NextApiRequest, res: NextApiResponse) {
++  const url = `${BACKEND}${req.url?.replace('/api/proxy', '')}`;
++  const r = await fetch(url);
++  const data = await r.json();
++  res.status(200).json(data);
++}
++
+*** End Patch
+*** Begin Patch
+*** Add File: infra/scripts/run_migrations_ci.sh
++#!/usr/bin/env bash
++set -euo pipefail
++
++# Wait for Postgres before applying migrations
++
++echo "Waiting for Postgres..."
++until pg_isready -h "${PGHOST:-localhost}" -p "${PGPORT:-5432}" -U "${PGUSER:-gm_user}" >/dev/null 2>&1; do
++  sleep 1
++done
++
++echo "Applying migrations (CI runner)..."
++psql "${DATABASE_URL:-postgres://gm_user:gm_pass@localhost:5432/global_monitor}" -f infra/migrations/0001_init.sql
++psql "${DATABASE_URL:-postgres://gm_user:gm_pass@localhost:5432/global_monitor}" -f infra/migrations/0002_ais_observations.sql
++
++echo "Migrations complete."
++
+*** End Patch
